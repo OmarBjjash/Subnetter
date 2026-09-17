@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import ipaddress
+import math
+
+
+# ------------------------------------------------------------------
+# Themes
+# ------------------------------------------------------------------
+THEMES = {
+    "dark": {
+        "BG":        "#1e1e2e",
+        "CARD_BG":   "#282a3a",
+        "FG":        "#e0e0e6",
+        "FG_MUTED":  "#9a9ab0",
+        "ACCENT":    "#7aa2f7",
+        "ACCENT_HOV":"#5f8ce0",
+        "BORDER":    "#3a3c52",
+        "ENTRY_BG":  "#1f2030",
+        "BTN_FG":    "#0b0b14",
+        "SEL_BG":    "#7aa2f7",
+        "SEL_FG":    "#0b0b14",
+    },
+    "light": {
+        "BG":        "#f4f5f8",
+        "CARD_BG":   "#ffffff",
+        "FG":        "#1e1e2e",
+        "FG_MUTED":  "#6b6b80",
+        "ACCENT":    "#3b6fe0",
+        "ACCENT_HOV":"#2d5bc7",
+        "BORDER":    "#d6d8e0",
+        "ENTRY_BG":  "#f0f1f5",
+        "BTN_FG":    "#ffffff",
+        "SEL_BG":    "#3b6fe0",
+        "SEL_FG":    "#ffffff",
+    },
+}
+
+
+class SubnetCalculatorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Subnetter")
+        self.current_theme = "dark"
+
+        self._build_ui()
+        self._apply_theme(self.current_theme)
+
+        self.root.update_idletasks()
+        self._center_and_size(1100, 760)
+
+    # ------------------------------------------------------------------
+    # Layout
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(2, weight=1)
+
+        # ---- Top bar (title + theme toggle) ----
+        self.top_bar = ttk.Frame(self.root, style="TopBar.TFrame")
+        self.top_bar.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 0))
+        self.top_bar.columnconfigure(0, weight=1)
+
+        self.title_label = ttk.Label(self.top_bar, text="Subnetter (subnet calculator)",
+                                     style="Title.TLabel")
+        self.title_label.grid(row=0, column=0, sticky="w")
+
+        self.theme_btn = ttk.Button(self.top_bar, text="☀  Light",
+                                    style="Ghost.TButton",
+                                    command=self.toggle_theme)
+        self.theme_btn.grid(row=0, column=1, sticky="e")
+
+        # ---- Input card ----
+        # Note: spaces around "Input" give the title extra padding.
+        self.input_card = ttk.LabelFrame(self.root, text="  Input  ",
+                                         style="Card.TLabelframe", padding=20)
+        self.input_card.grid(row=1, column=0, sticky="ew", padx=16, pady=(12, 8))
+        self.input_card.columnconfigure(1, weight=1)
+
+        # Row 0: IP / CIDR
+        ttk.Label(self.input_card, text="IP / CIDR",
+                  width=16, anchor="w").grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self.ip_entry = ttk.Entry(self.input_card, font=("Consolas", 11))
+        self.ip_entry.grid(row=0, column=1, sticky="ew", pady=(0, 10))
+        self.ip_entry.insert(0, "192.168.0.0/24")
+
+        # Row 1: Number of subnets
+        ttk.Label(self.input_card, text="Number of subnets",
+                  width=16, anchor="w").grid(row=1, column=0, sticky="w", pady=(0, 10))
+        self.num_entry = ttk.Entry(self.input_card, font=("Consolas", 11))
+        self.num_entry.grid(row=1, column=1, sticky="ew", pady=(0, 10))
+        self.num_entry.insert(0, "3")
+
+        # Row 2: Mode
+        ttk.Label(self.input_card, text="Mode",
+                  width=16, anchor="w").grid(row=2, column=0, sticky="nw", pady=(0, 4))
+        mode_frame = ttk.Frame(self.input_card, style="Card.TFrame")
+        mode_frame.grid(row=2, column=1, sticky="w", pady=(0, 4))
+
+        self.mode_var = tk.StringVar(value="equal")
+        ttk.Radiobutton(mode_frame, text="Equal-size (next power of 2)",
+                        variable=self.mode_var, value="equal",
+                        ).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Radiobutton(mode_frame, text="VLSM (Variable Length Subnet Mask)",
+                        variable=self.mode_var, value="vlsm",
+                        ).grid(row=1, column=0, sticky="w", pady=2)
+
+        # Row 3: Calculate
+        btn_frame = ttk.Frame(self.input_card, style="Card.TFrame")
+        btn_frame.grid(row=3, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(btn_frame, text="Calculate",
+                   style="Accent.TButton",
+                   command=self.calculate).pack(side="right")
+        self.root.bind("<Return>", lambda e: self.calculate())
+
+        # ---- Output card ----
+        self.output_card = ttk.LabelFrame(self.root, text="  Results  ",
+                                          style="Card.TLabelframe", padding=14)
+        self.output_card.grid(row=2, column=0, sticky="nsew", padx=16, pady=(8, 16))
+        self.output_card.columnconfigure(0, weight=1)
+        self.output_card.rowconfigure(0, weight=1)
+
+        self.output_text = scrolledtext.ScrolledText(
+            self.output_card,
+            wrap="none",
+            font=("Consolas", 10),
+            relief="flat", borderwidth=0,
+            padx=12, pady=10,
+            height=10,
+        )
+        self.output_text.grid(row=0, column=0, sticky="nsew")
+        self.output_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Theme
+    # ------------------------------------------------------------------
+    def toggle_theme(self):
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        self._apply_theme(self.current_theme)
+
+    def _apply_theme(self, name):
+        t = THEMES[name]
+        self.current_theme = name
+
+        self.root.configure(bg=t["BG"])
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        # Base
+        style.configure(".", background=t["BG"], foreground=t["FG"],
+                        fieldbackground=t["ENTRY_BG"], bordercolor=t["BORDER"],
+                        focuscolor=t["ACCENT"], font=("Segoe UI", 10))
+
+        # Top bar
+        style.configure("TopBar.TFrame", background=t["BG"])
+        style.configure("Title.TLabel", background=t["BG"], foreground=t["FG"],
+                        font=("Segoe UI", 13, "bold"))
+
+        # Card
+        style.configure("Card.TLabelframe",
+                        background=t["CARD_BG"], bordercolor=t["BORDER"],
+                        relief="flat", borderwidth=1)
+        style.configure("Card.TLabelframe.Label",
+                        background=t["CARD_BG"], foreground=t["ACCENT"],
+                        font=("Segoe UI", 11, "bold"))
+        style.configure("Card.TFrame", background=t["CARD_BG"])
+
+        # Labels
+        style.configure("TLabel", background=t["CARD_BG"], foreground=t["FG"],
+                        font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background=t["CARD_BG"],
+                        foreground=t["FG_MUTED"], font=("Segoe UI", 9))
+
+        # Entry
+        style.configure("TEntry",
+                        fieldbackground=t["ENTRY_BG"], foreground=t["FG"],
+                        insertcolor=t["FG"], bordercolor=t["BORDER"],
+                        lightcolor=t["BORDER"], darkcolor=t["BORDER"],
+                        relief="flat", padding=6)
+        style.map("TEntry",
+                  bordercolor=[("focus", t["ACCENT"])],
+                  lightcolor=[("focus", t["ACCENT"])],
+                  darkcolor=[("focus", t["ACCENT"])])
+
+        # Radiobutton
+        style.configure("TRadiobutton",
+                        background=t["CARD_BG"], foreground=t["FG"],
+                        font=("Segoe UI", 10),
+                        focuscolor=t["CARD_BG"],
+                        indicatorcolor=t["ENTRY_BG"])
+        style.map("TRadiobutton",
+                  background=[("active", t["CARD_BG"])],
+                  foreground=[("active", t["ACCENT"])],
+                  indicatorcolor=[("selected", t["ACCENT"])])
+
+        # Accent button
+        style.configure("Accent.TButton",
+                        background=t["ACCENT"], foreground=t["BTN_FG"],
+                        font=("Segoe UI", 10, "bold"),
+                        borderwidth=0, padding=(18, 8), relief="flat")
+        style.map("Accent.TButton",
+                  background=[("active", t["ACCENT_HOV"]),
+                              ("pressed", t["ACCENT_HOV"])])
+
+        # Ghost button (theme toggle)
+        style.configure("Ghost.TButton",
+                        background=t["BG"], foreground=t["FG"],
+                        font=("Segoe UI", 9),
+                        borderwidth=0, padding=(12, 6), relief="flat")
+        style.map("Ghost.TButton",
+                  background=[("active", t["BORDER"])],
+                  foreground=[("active", t["ACCENT"])])
+
+        # Scrollbars
+        style.configure("Vertical.TScrollbar",
+                        background=t["CARD_BG"], troughcolor=t["BG"],
+                        bordercolor=t["BG"], arrowcolor=t["FG_MUTED"])
+        style.configure("Horizontal.TScrollbar",
+                        background=t["CARD_BG"], troughcolor=t["BG"],
+                        bordercolor=t["BG"], arrowcolor=t["FG_MUTED"])
+
+        # Text widget (plain tk, must be styled manually)
+        self.output_text.configure(
+            bg=t["ENTRY_BG"], fg=t["FG"],
+            insertbackground=t["FG"],
+            selectbackground=t["SEL_BG"],
+            selectforeground=t["SEL_FG"],
+        )
+        self.output_text.tag_configure("header", foreground=t["ACCENT"],
+                                       font=("Consolas", 10, "bold"))
+        self.output_text.tag_configure("muted", foreground=t["FG_MUTED"])
+        self.output_text.tag_configure("sep", foreground=t["BORDER"])
+
+        # Update toggle button label
+        self.theme_btn.configure(text="☀  Light" if name == "dark" else "🌙  Dark")
+
+    # ------------------------------------------------------------------
+    # Window sizing
+    # ------------------------------------------------------------------
+    def _center_and_size(self, w, h):
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        w = min(w, sw - 60)
+        h = min(h, sh - 100)
+        x = (sw - w) // 2
+        y = max(0, (sh - h) // 3)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ------------------------------------------------------------------
+    # Calculation
+    # ------------------------------------------------------------------
+    def calculate(self):
+        ip_cidr = self.ip_entry.get().strip()
+        num_str = self.num_entry.get().strip()
+        mode = self.mode_var.get()
+
+        if not ip_cidr:
+            messagebox.showerror("Error", "Please enter an IP/CIDR")
+            return
+
+        try:
+            num_subnets = int(num_str)
+            if num_subnets < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Number of subnets must be a positive integer")
+            return
+
+        try:
+            net = ipaddress.ip_network(ip_cidr, strict=False)
+        except ValueError as e:
+            messagebox.showerror("Error", f"Invalid IP/CIDR: {e}")
+            return
+
+        try:
+            if mode == "equal":
+                subnets, note = self.get_equal_subnets(net, num_subnets)
+            else:
+                subnets, note = self.get_vlsm_subnets(net, num_subnets)
+        except Exception as e:
+            messagebox.showerror("Error", f"Calculation failed: {e}")
+            return
+
+        # Build output
+        header_lines = [
+            f"Network         : {net}",
+            f"Requested       : {num_subnets} subnet(s)",
+            f"Mode            : {'Equal-size' if mode == 'equal' else 'VLSM (Variable Length Subnet Mask)'}",
+        ]
+
+        headers = ("#", "CIDR", "Network", "Broadcast",
+                   "First usable", "Last usable", "Hosts")
+        widths = (4, 20, 16, 16, 17, 17, 7)
+
+        def fmt_row(cells):
+            return "  ".join(str(c).ljust(w) for c, w in zip(cells, widths))
+
+        table_lines = [
+            fmt_row(headers),
+            "-" * (sum(widths) + 2 * (len(widths) - 1)),
+        ]
+
+        for i, subnet in enumerate(subnets, 1):
+            hosts = list(subnet.hosts())
+            first = str(hosts[0]) if hosts else "N/A"
+            last = str(hosts[-1]) if hosts else "N/A"
+            table_lines.append(fmt_row((
+                i,
+                str(subnet),
+                str(subnet.network_address),
+                str(subnet.broadcast_address),
+                first,
+                last,
+                len(hosts),
+            )))
+
+        # Render with tags
+        self.output_text.configure(state="normal")
+        self.output_text.delete("1.0", tk.END)
+
+        for line in header_lines:
+            self.output_text.insert(tk.END, line + "\n", "header")
+        self.output_text.insert(tk.END, "\n")
+        self.output_text.insert(tk.END, table_lines[0] + "\n", "header")
+        self.output_text.insert(tk.END, table_lines[1] + "\n", "sep")
+        for row in table_lines[2:]:
+            self.output_text.insert(tk.END, row + "\n")
+        if note:
+            self.output_text.insert(tk.END, "\n" + note + "\n", "muted")
+
+        self.output_text.configure(state="disabled")
+        # NOTE: no window resize here - keeps the window stable.
+
+    # ------------------------------------------------------------------
+    # Subnetting logic
+    # ------------------------------------------------------------------
+    def get_equal_subnets(self, net, num_subnets):
+        bits = math.ceil(math.log2(num_subnets))
+        new_prefix = net.prefixlen + bits
+        if new_prefix > net.max_prefixlen:
+            raise ValueError(f"Cannot make {num_subnets} subnets from {net}")
+        all_subnets = list(net.subnets(new_prefix=new_prefix))
+        subnets = all_subnets[:num_subnets]
+        note = ""
+        if num_subnets != len(all_subnets):
+            note = (f"Note: {len(all_subnets)} equal subnets were created; only first "
+                    f"{num_subnets} shown. {len(all_subnets) - num_subnets} subnet(s) unused.")
+        return subnets, note
+
+    def get_vlsm_subnets(self, net, num_subnets):
+        subnets = self._vlsm_split(net, num_subnets)
+        subnets.sort(key=lambda s: s.network_address)
+        note = "Note: Subnets are variable size (VLSM) to match the exact requested number."
+        return subnets, note
+
+    def _vlsm_split(self, network, n):
+        if n == 1:
+            return [network]
+        try:
+            halves = list(network.subnets(prefixlen_diff=1))
+        except ValueError:
+            return [network] * n
+        if len(halves) != 2:
+            return [network] * n
+        left, right = halves
+        left_count = math.ceil(n / 2)
+        right_count = n - left_count
+        return (self._vlsm_split(left, left_count) +
+                self._vlsm_split(right, right_count))
+
+
+# ------------------------------------------------------------------
+# Icon resolution
+# ------------------------------------------------------------------
+def find_icon():
+    """Look for the app icon in the project folder, then in the installed theme."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+
+    candidates = [
+        # Project folder (when running from source)
+        here / "icons" / "core" / "subnetter-256.png",
+        here / "icons" / "core" / "subnetter-512.png",
+        here / "icons" / "core" / "subnetter-1024.png",
+        # Installed icon theme (after running install.sh)
+        Path.home() / ".local/share/icons/hicolor/256x256/apps/subnetter.png",
+        Path.home() / ".local/share/icons/hicolor/512x512/apps/subnetter.png",
+        Path("/usr/share/icons/hicolor/256x256/apps/subnetter.png"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+if __name__ == "__main__":
+    # className sets WM_CLASS — must match StartupWMClass in the .desktop file
+    root = tk.Tk(className="subnetter")
+
+    icon_path = find_icon()
+    if icon_path:
+        try:
+            icon_img = tk.PhotoImage(file=str(icon_path))
+            root.iconphoto(True, icon_img)
+            root._icon_ref = icon_img  # keep a reference so it isn't GC'd
+        except Exception as e:
+            print(f"Could not load icon {icon_path}: {e}")
+    else:
+        print("No icon found in project folder or icon theme.")
+
+    app = SubnetCalculatorGUI(root)
+    root.mainloop()
